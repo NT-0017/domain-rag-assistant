@@ -1,0 +1,23 @@
+# Virtual environment and Python junk
+venv/
+__pycache__/
+*.pyc
+
+# Secrets (never commit keys)
+.env
+*.key
+
+# Database built from your documents
+chroma_db/
+
+# Your documents and their OCR caches
+data/*.pdf
+data/*.json
+
+# Editor and OS files
+.vscode/
+.DS_Store
+
+# Evaluation material built from personal documents
+eval_questions.txt
+eval_answers_output.md
