@@ -53,7 +53,10 @@ with st.sidebar:
             "Pages": str(len({m["page"] for m in file_metas})),
             "Chunks": str(len(file_metas)),
         })
-    st.table(pd.DataFrame(rows).set_index("Document"))
+    if rows:
+        st.table(pd.DataFrame(rows).set_index("Document"))
+    else:
+        st.caption("No documents yet. Upload a PDF above.")
     selected = st.selectbox("Search in", ["All documents"] + names)
     file_filter = None if selected == "All documents" else selected
 
@@ -95,7 +98,11 @@ def show_message(role, content, sources=None):
 for msg in st.session_state.messages:
     show_message(msg["role"], msg["content"], msg.get("sources"))
 # ---- Welcome screen (only while the chat is empty) ----
-if not st.session_state.messages and "pending" not in st.session_state:
+no_documents = collection.count() == 0
+if no_documents:
+    st.info("👋 No documents yet. Upload a PDF in the sidebar to begin. "
+            "Scanned (image-only) PDFs are skipped because OCR is off.")
+if not no_documents and not st.session_state.messages and "pending" not in st.session_state:
     st.markdown(
         "**What you can ask** (use your own topics):\n"
         "- A question: *What is ...?*\n"
@@ -107,7 +114,7 @@ if not st.session_state.messages and "pending" not in st.session_state:
         st.session_state.pending = "Summarize page 1"
         st.rerun()
 # ---- New question ----
-question = st.chat_input("Ask a question about your PDFs")
+question = st.chat_input("Ask a question about your PDFs", disabled=no_documents)
 if not question:
     question = st.session_state.pop("pending", None)
 if question:

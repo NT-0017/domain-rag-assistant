@@ -21,3 +21,6 @@ data/*.json
 # Evaluation material built from personal documents
 eval_questions.txt
 eval_answers_output.md
+
+chroma_db*/
+data_*/

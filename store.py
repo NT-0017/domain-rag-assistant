@@ -27,6 +27,9 @@ def get_collection(data_folder="data", use_ocr=False):
         print("Database is empty, reading PDFs and embedding chunks...")
         pages = load_all_pdfs(data_folder, use_ocr=use_ocr)
         chunks = make_chunks(pages)
+        if not chunks:
+            print(f"No readable PDFs found in '{data_folder}'. Starting with an empty database.")
+            return collection
         texts = [c["text"] for c in chunks]
         embeddings = embed_model.encode(texts, show_progress_bar=True).tolist()
         collection.add(
