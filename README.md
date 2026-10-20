@@ -2,7 +2,11 @@
 
 A retrieval-augmented generation (RAG) assistant that answers questions from your own PDF documents. It finds the relevant passages by meaning, then uses Google Gemini to write a new answer in its own words, with the source file and pages shown for every answer.
 
-> Status: working prototype, developed and tested in GitHub Codespaces with Python 3.14.2. Deployment and OCR are still to do (see Roadmap).
+> Status: deployed prototype, developed and tested in GitHub Codespaces. OCR is still to do (see Roadmap).
+
+**Live demo:** https://domain-rag-assistant.streamlit.app
+
+The deployed app starts with no documents, so upload a text-based PDF first. It runs on a free tier: it may sleep when idle, uploaded files should be treated as temporary, and everyone who opens the link shares the same documents and the same Gemini free quota.
 
 ## What it can do
 
@@ -53,7 +57,7 @@ domain-rag-assistant/
 ├── eval_chunks.py     # chunk size comparison (no LLM calls)
 ├── eval_answers.py    # runs a few questions through the full pipeline
 ├── check_scores.py    # prints similarity scores to choose the cutoff
-├── eval_questions.txt # test questions: question | file | page
+├── eval_questions.txt # test questions: question | file | page (not in the repo, write your own)
 ├── requirements.txt
 ├── .streamlit/config.toml   # theme
 ├── data/              # your PDFs (not included in the repo)
@@ -84,7 +88,7 @@ Create a `data/` folder and put at least one text-based PDF in it, then run:
 streamlit run app.py
 ```
 
-The first run reads the PDFs in `data/` and builds the database in `chroma_db/`. Later runs load it instantly. After that you can add more PDFs with the upload box in the sidebar.
+The first run reads the PDFs in `data/` and builds the database in `chroma_db/`. Later runs load it instantly. After that you can add more PDFs with the upload box in the sidebar. If `data/` is empty, the app starts with no documents and asks you to upload one.
 
 To test the pieces without the interface:
 
@@ -94,9 +98,13 @@ python store.py       # builds the database and runs a sample search
 python generator.py   # asks one question through Gemini
 ```
 
+## Deployment
+
+The live demo runs on Streamlit Community Cloud, deployed from this repository (branch `main`, main file `app.py`). The Gemini key is stored in the app's Secrets settings as `GEMINI_API_KEY`, not in the code. Streamlit redeploys the app when the branch changes. To deploy your own copy, fork the repository, create a new app on [share.streamlit.io](https://share.streamlit.io) pointing at it, and add your own key in Advanced settings.
+
 ## Evaluation
 
-Three PDFs were used: a book chapter on ensemble learning (11 pages, scanned and read with OCR), a short machine learning guide (10 pages) and an interview preparation document (53 pages). They are not included in this repository, so the exact numbers cannot be reproduced without the same files, but the scripts and the method can be reused with your own documents and your own `eval_questions.txt`.
+Three PDFs were used: a book chapter on ensemble learning (11 pages, scanned and read with OCR), a short machine learning guide (10 pages) and an interview preparation document (53 pages). They are not part of the project files, so the exact numbers cannot be reproduced without the same files, but the scripts and the method can be reused with your own documents and your own `eval_questions.txt`.
 
 ### 1. Retrieval (`python eval_retrieval.py`, no LLM calls)
 
@@ -152,7 +160,8 @@ Same questions, a separate temporary database for each setting.
 - **Diagrams and charts** are not understood, only the text.
 - **Follow-up detection** is keyword based (words such as "it", "that", "more", "again"), so a follow-up without such words may not be rewritten. Each rewrite costs one extra Gemini request.
 - **Page requests** match "page N" in the question. With several documents and "Search in" set to all, the pages of every document are combined.
-- **Shared data:** there is no login, so all users of one running app share the same documents and database.
+- **Shared data:** there is no login, so all users of one running app share the same documents and database. On the public demo, every visitor can see every uploaded document and uses the same Gemini quota.
+- **Free hosting:** the deployed app may sleep when idle, and uploaded files and the database should be treated as temporary because they may be lost on a restart.
 - **Upload size:** the maximum upload depends on where the app runs (a 32 MB file was rejected in GitHub Codespaces).
 - **API quota:** the Gemini free tier has low daily and per-minute limits that vary by model and change over time. A question costs one request, a follow-up costs two, and questions rejected by the cutoff cost none.
 - **Chat history** lives only in the browser session.
@@ -167,7 +176,7 @@ Same questions, a separate temporary database for each setting.
 - [x] Follow-up questions with chat memory
 - [x] Automatic retry and clear Gemini error messages
 - [x] Evaluation: retrieval, chunk sizes, answer review
-- [ ] Deployment
+- [x] Deployment (Streamlit Community Cloud)
 - [ ] OCR for scanned PDFs
 - [ ] Delete a document from the database
 - [ ] Show only the pages the model actually used
@@ -177,4 +186,4 @@ Same questions, a separate temporary database for each setting.
 
 ## Documents
 
-The PDFs used during development are not included in this repository. Use your own documents.
+The PDFs used during development are not part of the project files. Use your own documents.
