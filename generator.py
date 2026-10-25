@@ -13,6 +13,7 @@ from store import embed_model, get_collection
 
 MODEL_NAME = "gemini-3.5-flash-lite"  # change here if you switch models
 NOT_FOUND = "i could not find this in the documents"
+REWRITE_ENABLED = os.environ.get("ENABLE_REWRITE", "0") == "1"
 MIN_SCORE = 0.35   # best match below this means the documents don't cover the question
 
 _api_key = os.environ.get("GEMINI_API_KEY")
@@ -61,7 +62,7 @@ def _unique_sources(metas):
     return sorted({(m["file"], m["page"]) for m in metas})
 
 FOLLOW_UP_WORDS = re.compile(
-    r"\b(it|its|that|this|those|these|they|them|their|more|simpler|shorter|"
+    r"\b(it|its|that|those|these|they|them|their|more|simpler|shorter|"
     r"again|previous|above|same|another|elaborate|continue)\b"
     r"|^(and|also|but|so)\b|what about|how about",
     re.IGNORECASE,
@@ -100,16 +101,127 @@ def _finish(answer, metas):
         return answer, []
     return answer, _unique_sources(metas)
 
+NOT_FOUND_MESSAGE = ("I could not find this in the documents. Try naming the topic, "
+                     "asking a full question, or choosing one document in Search in.")
+
+STOPWORDS = {
+    "the", "and", "for", "are", "was", "were", "with", "that", "this", "these", "those",
+    "what", "which", "who", "whom", "when", "where", "why", "how", "does", "did", "can",
+    "could", "would", "should", "will", "has", "have", "had", "explain", "describe",
+    "tell", "give", "show", "about", "from", "into", "than", "then", "them", "they",
+    "their", "there", "your", "you", "please", "summarize", "summary", "mean", "means",
+    "define", "meaning", "paper", "document", "pdf", "section",
+}
+KEYWORD_SLOTS = 2   # how many keyword-matched chunks to add
+
+
+def _words(text):
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def _stem(word):
+    return word if len(word) <= 5 else word[:5]
+
+
+def _key_terms(question):
+    return {_stem(w) for w in _words(question) if len(w) > 2 and w not in STOPWORDS}
+
+
+def retrieve(question, k=5, file=None):
+    """Meaning search plus keyword search. Returns (docs, metas), or None if nothing
+    in the documents matches well enough."""
+    where = {"file": file} if file else None
+    q_emb = embed_model.encode(question).tolist()
+    res = collection.query(query_embeddings=[q_emb], n_results=k, where=where)
+    if not res["ids"][0]:
+        return None
+    best = 1 - res["distances"][0][0]
+    chosen = {}   # chunk id -> (text, metadata), in priority order
+
+    # 1. Chunks that contain ALL the key words of the question
+    terms = _key_terms(question)
+    strong = False
+    if terms:
+        everything = collection.get(where=where)
+        scored = []
+        for cid, d, m in zip(everything["ids"], everything["documents"],
+                             everything["metadatas"]):
+            counts = {}
+            for w in _words(d):
+                s = _stem(w)
+                if s in terms:
+                    counts[s] = counts.get(s, 0) + 1
+            if counts:
+                scored.append((len(counts) / len(terms), sum(counts.values()), cid, d, m))
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        for frac, _, cid, d, m in scored[:KEYWORD_SLOTS]:
+            if frac == 1.0:
+                strong = True
+                chosen[cid] = (d, m)
+
+    # 2. For a keyword match, also take the chunk after it (sections continue)
+    if strong:
+        wanted = []
+        for cid in list(chosen):
+            match = re.match(r"^(.*)_p(\d+)_c(\d+)$", cid)
+            if match:
+                base, page, i = match.group(1), int(match.group(2)), int(match.group(3))
+                wanted += [f"{base}_p{page}_c{i + 1}", f"{base}_p{page + 1}_c0"]
+        if wanted:
+            extra = collection.get(ids=wanted)
+            for cid, d, m in zip(extra["ids"], extra["documents"], extra["metadatas"]):
+                chosen.setdefault(cid, (d, m))
+
+    # 3. The meaning-search results, only if they pass the cutoff (or keywords matched)
+    if strong or best >= MIN_SCORE:
+        for cid, d, m in zip(res["ids"][0], res["documents"][0], res["metadatas"][0]):
+            chosen.setdefault(cid, (d, m))
+
+    if not chosen:
+        return None
+    items = list(chosen.values())[: k + 4]
+    return [d for d, _ in items], [m for _, m in items]
+
+SUMMARY_WORDS = re.compile(
+    r"\b(summar\w*|overview|tl;?dr|main (points|ideas)|key (points|takeaways)|"
+    r"what is (this|the) (paper|document|pdf|file|chapter) about)\b", re.IGNORECASE)
+MAX_SUMMARY_CHUNKS = 20
+
+
+def _document_overview(file):
+    """Chunks of one document in reading order, spread evenly if there are many."""
+    data = collection.get(where={"file": file})
+    items = []
+    for cid, d, m in zip(data["ids"], data["documents"], data["metadatas"]):
+        pos = re.search(r"_p(\d+)_c(\d+)$", cid)
+        if pos:
+            items.append(((int(pos.group(1)), int(pos.group(2))), d, m))
+    items.sort(key=lambda x: x[0])
+    if len(items) > MAX_SUMMARY_CHUNKS:
+        step = len(items) / MAX_SUMMARY_CHUNKS
+        items = [items[int(i * step)] for i in range(MAX_SUMMARY_CHUNKS)]
+    return [d for _, d, _ in items], [m for _, _, m in items]
+
+
+def _retrieve_with_rewrite(question, k, file):
+    """Normal retrieval. If a SHORT message that is not a question fails, ask Gemini
+    to turn it into a full question and try once more (costs 1 extra request)."""
+    found = retrieve(question, k, file)
+    if (found is not None or not REWRITE_ENABLED or len(question.split()) > 6
+            or question.strip().endswith("?")):
+        return found
+    rewritten = _generate(
+        "Rewrite this short message as one clear, complete question about a document. "
+        "Keep every key word. Return ONLY the question.\n\nMESSAGE: " + question).strip()
+    print("RETRY WITH:", repr(rewritten))
+    return retrieve(rewritten, k, file) if rewritten else None
 
 def ask(question, k=5, file=None):
     """Meaning-based search, then Gemini writes the answer."""
-    q_emb = embed_model.encode(question).tolist()
-    where = {"file": file} if file else None
-    results = collection.query(query_embeddings=[q_emb], n_results=k, where=where)
-    
-    if not results["distances"][0] or 1 - results["distances"][0][0] < MIN_SCORE:
-        return "I could not find this in the documents.", []
-    docs, metas = results["documents"][0], results["metadatas"][0]
+    found = _retrieve_with_rewrite(question, k, file)
+    if found is None:
+        return NOT_FOUND_MESSAGE, []
+    docs, metas = found
 
     context = "\n\n".join(
         f"[Source: {m['file']}, page {m['page']}]\n{d}" for d, m in zip(docs, metas)
@@ -183,6 +295,7 @@ def assistant(question, file=None, k=10, history=None):
     Everything else goes to smart_ask()."""
     question = rewrite_question(question, history)
     q = question.lower()
+    docs = metas = None
 
     if re.search(r"true\s*/?\s*(or\s*)?false|quiz|mcq|multiple choice|exercise|practice questions", q):
         instruction = ("Create practice questions on this topic. Unless the request gives a number, "
@@ -192,16 +305,31 @@ def assistant(question, file=None, k=10, history=None):
     elif re.search(r"\bnotes\b|revision|study guide|cheat sheet", q):
         instruction = ("Write clear study notes on this topic. Use short headings and bullet points, "
                        "define key terms simply, and end with a 'Key takeaways' list.")
+    
+    elif SUMMARY_WORDS.search(q) and not re.search(r"page\s*\d+", q):
+        target = file
+        if target is None:
+            names = sorted({m["file"] for m in
+                            collection.get(include=["metadatas"])["metadatas"]})
+            if len(names) != 1:
+                return ("Which document should I summarize? Choose one in **Search in** "
+                        "in the sidebar, then ask again.", [])
+            target = names[0]
+        docs, metas = _document_overview(target)
+        if not docs:
+            return NOT_FOUND_MESSAGE, []
+        instruction = ("Write a clear summary of this document: first its purpose in two "
+                       "sentences, then its main sections or points as short bullets, then "
+                       "the conclusion if there is one. The text is a sample of excerpts "
+                       "in reading order, so do not claim to cover parts that are not shown.")
     else:
         return smart_ask(question, file=file)
 
-    q_emb = embed_model.encode(question).tolist()
-    where = {"file": file} if file else None
-    results = collection.query(query_embeddings=[q_emb], n_results=k, where=where)
-
-    if not results["distances"][0] or 1 - results["distances"][0][0] < MIN_SCORE:
-        return "I could not find this in the documents.", []
-    docs, metas = results["documents"][0], results["metadatas"][0]
+    if docs is None:
+        found = _retrieve_with_rewrite(question, k, file)
+        if found is None:
+            return NOT_FOUND_MESSAGE, []
+        docs, metas = found
 
     context = "\n\n".join(
         f"[Source: {m['file']}, page {m['page']}]\n{d}" for d, m in zip(docs, metas)

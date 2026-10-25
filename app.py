@@ -5,7 +5,7 @@ import os
 import pandas as pd
 
 from generator import assistant, collection, MODEL_NAME, GeminiError
-from store import add_pdf
+from store import add_pdf, OCR_ENABLED
 
 st.set_page_config(page_title="Domain RAG Assistant", page_icon="📚")
 st.title("📚 Domain RAG Assistant")
@@ -101,7 +101,9 @@ for msg in st.session_state.messages:
 no_documents = collection.count() == 0
 if no_documents:
     st.info("👋 No documents yet. Upload a PDF in the sidebar to begin. "
-            "Scanned (image-only) PDFs are skipped because OCR is off.")
+            + ("Scanned PDFs are read with OCR, which can take a while."
+               if OCR_ENABLED else
+               "Scanned (image-only) PDFs are skipped because OCR is off."))
 if not no_documents and not st.session_state.messages and "pending" not in st.session_state:
     st.markdown(
         "**What you can ask** (use your own topics):\n"

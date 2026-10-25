@@ -11,11 +11,12 @@ from ingest import extract_pdf, load_all_pdfs, make_chunks
 DB_PATH = "chroma_db"
 COLLECTION_NAME = "pdf_chunks"
 EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
+OCR_ENABLED = os.environ.get("ENABLE_OCR", "0") == "1"
 
 embed_model = SentenceTransformer(EMBED_MODEL_NAME)
 
 
-def get_collection(data_folder="data", use_ocr=False):
+def get_collection(data_folder="data", use_ocr=OCR_ENABLED):
     """Return the ChromaDB collection, building it first if it is empty."""
     client = chromadb.PersistentClient(path=DB_PATH)
     collection = client.get_or_create_collection(
@@ -52,7 +53,7 @@ def add_pdf(collection, pdf_path):
     if collection.get(where={"file": name}, limit=1)["ids"]:
         return {"status": "exists", "file": name, "chunks": 0, "skipped_pages": 0}
 
-    pages = extract_pdf(pdf_path, use_ocr=False)
+    pages = extract_pdf(pdf_path, use_ocr=OCR_ENABLED)
     skipped = sum(1 for p in pages if p["source"] == "skipped_scanned")
     chunks = make_chunks(pages)
 
